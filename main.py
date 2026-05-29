@@ -46,7 +46,11 @@ cmap_mesh = "viridis"  # "coolwarm"
 
 def train_and_evaluate(args):
     # zeros are normal, ones are anomalous
-    data_train, labels_train, data_test, labels_test, id_to_type = get_dataset()
+    data_train, labels_train, data_test, labels_test, id_to_type = get_dataset(
+        train_dir=args.train_dir,
+        test_dir=args.test_dir,
+        test_labels_dir=args.test_labels_dir
+    )
 
     data_train = torch.Tensor(data_train)
     data_test = torch.Tensor(data_test)
@@ -54,13 +58,16 @@ def train_and_evaluate(args):
     data_train_mean = torch.Tensor(np.asarray([0.]))
     data_train_std = torch.Tensor(np.asarray([1.]))
     if not args.unstandardized:
-        # stats over all components
-        # data_train_mean = data_train.mean()
-        # data_train_std = data_train.std()
-
-        # stats component-wise
-        data_train_mean = data_train.mean(dim=0)
-        data_train_std = data_train.std(dim=0)
+        try:
+            print(f"Loading precomputed statistics from {args.stats_path}...")
+            stats = np.load(args.stats_path)
+            data_train_mean = torch.Tensor(stats['mean'])
+            data_train_std = torch.Tensor(stats['std'])
+        except Exception as e:
+            print(f"Could not load stats from {args.stats_path}: {e}")
+            print("Falling back to calculating mean and std dynamically...")
+            data_train_mean = data_train.mean(dim=0)
+            data_train_std = data_train.std(dim=0)
 
     data_train_mean = data_train_mean.to(args.device)
     data_train_std = data_train_std.to(args.device)
@@ -387,6 +394,10 @@ def train_and_evaluate(args):
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument("--experiment_name", type=str, default="MULDE")
+    parser.add_argument("--train_dir", type=str, default="/content/drive/MyDrive/MULDE/features/hiera_large_16x224_mae_k400_ft_k400_centered_s4/train")
+    parser.add_argument("--test_dir", type=str, default="/content/drive/MyDrive/MULDE/features/hiera_large_16x224_mae_k400_ft_k400_centered_s4/test")
+    parser.add_argument("--test_labels_dir", type=str, default="/content/shanghaitech/testing/label")
+    parser.add_argument("--stats_path", type=str, default="/content/drive/MyDrive/MULDE/features/hiera_large_16x224_mae_k400_ft_k400_centered_s4/train_feature_stats.npz")
     parser.add_argument("--device", type=str, default="cuda:0")
     parser.add_argument("--epochs", type=int, default=1000, help='')
     parser.add_argument("--lr", type=float, default=5e-4, help='')
