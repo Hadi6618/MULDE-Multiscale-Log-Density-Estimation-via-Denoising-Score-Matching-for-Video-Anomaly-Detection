@@ -18,6 +18,7 @@ The individual sigma evaluation is based on the AUC-ROC of the scores for each s
 """
 
 import numpy as np
+import os
 import argparse
 import utils
 import torch
@@ -107,6 +108,24 @@ def train_and_evaluate(args):
                                                                      args=args)
     utils.save_current_experiment_source_code(log_path)
 
+    # --- Checkpoint Resume Logic ---
+    start_epoch = 0
+    checkpoint_path = os.path.join(args.checkpoint_dir, "checkpoint.pth")
+    if os.path.exists(checkpoint_path):
+        print(f"Found checkpoint at {checkpoint_path}, resuming...")
+        try:
+            ckpt = torch.load(checkpoint_path, map_location=args.device, weights_only=False)
+            model.load_state_dict(ckpt['model_state_dict'])
+            optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+            scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+            start_epoch = ckpt['epoch'] + 1
+            print(f"Successfully resumed from epoch {start_epoch}")
+        except Exception as e:
+            print(f"WARNING: Failed to load checkpoint: {e}")
+            print("Starting training from scratch.")
+    else:
+        print("No checkpoint found. Starting training from scratch.")
+
     if args.plot_dataset:
         plt.figure(figsize=figsize)
         # plotting_utils.plot_mesh(plt, xx, yy, np.ones_like(xx) * np.linspace(xx.min(), xx.max(), meshgrid_points), colorbar_label="x direction colo-gradient")
@@ -124,7 +143,7 @@ def train_and_evaluate(args):
         plt.close()
 
 
-    for epoch in range(args.epochs + 1):
+    for epoch in range(start_epoch, args.epochs + 1):
         ################################################################################################################
         # train
         ################################################################################################################
@@ -246,7 +265,7 @@ def train_and_evaluate(args):
                 anomaly_scores = scores_by_sigma
             return anomaly_scores
 
-        if epoch % 5 == 0:
+        if epoch % args.eval_freq == 0 or epoch == args.epochs:
             # anomaly scores from test set
             scores_test = calculate_scores(dataloader_test, return_scores_by_sigma=True)
 
@@ -358,8 +377,21 @@ def train_and_evaluate(args):
             summary_writer.add_figure(f"_roc_auc_individual", fig, epoch)
             plt.close()
 
+            # --- Print AUC scores to terminal ---
+            sep = '=' * 60
+            print(f"\n{sep}")
+            print(f"  EVALUATION RESULTS - Epoch {epoch}")
+            print(f"{sep}")
+            print(f"  Best Individual Log-Density AUC: {best_auc_roc_log_density:.4f} (sigma={best_sigma_log_density})")
+            print(f"  Best Individual Score-Norm AUC:  {best_auc_roc_score_norm:.4f} (sigma={best_sigma_score_norm})")
+            print(f"  --- Aggregate AUC-ROC ---")
+            for score_type_ in anomaly_score_names:
+                for agg_type_, auc_val in auc_roc_aggregate[score_type_].items():
+                    print(f"    {score_type_}/{agg_type_}: {auc_val:.4f}")
+            print(f"{sep}\n")
 
-        if epoch % 5 == 0 and args.plot_dataset and data_train.shape[1] == 2:
+
+        if epoch % args.eval_freq == 0 and args.plot_dataset and data_train.shape[1] == 2:
             # scores_manifold = calculate_scores(dataloader_manifold, return_scores_by_sigma=True, L=3)
             scores_manifold = calculate_scores(dataloader_manifold, return_scores_by_sigma=True, L=[1e-3, 1e-2, 1e-1, 0.5, 1.])
             # scores_manifold = calculate_scores(dataloader_manifold, return_scores_by_sigma=True, L=5)
@@ -387,6 +419,27 @@ def train_and_evaluate(args):
                     plt.legend()
                     summary_writer.add_figure(f"{log_density_score_norm}_with_data/sigma_{sigma_}", plt.gcf(), epoch)
                     plt.close()
+
+        # --- Save Checkpoint ---
+        if epoch % args.checkpoint_freq == 0 and epoch > 0:
+            os.makedirs(args.checkpoint_dir, exist_ok=True)
+            ckpt_data = {
+                'epoch': epoch,
+                'model_state_dict': model.state_dict(),
+                'optimizer_state_dict': optimizer.state_dict(),
+                'scheduler_state_dict': scheduler.state_dict(),
+            }
+            torch.save(ckpt_data, checkpoint_path)
+            print(f"Checkpoint saved at epoch {epoch} to {checkpoint_path}")
+
+    # --- Save Final Model ---
+    os.makedirs(args.checkpoint_dir, exist_ok=True)
+    final_path = os.path.join(args.checkpoint_dir, "model_final.pth")
+    torch.save({
+        'epoch': args.epochs,
+        'model_state_dict': model.state_dict(),
+    }, final_path)
+    print(f"Final model saved to {final_path}")
 
     summary_writer.flush()
 
@@ -420,6 +473,9 @@ if __name__ == '__main__':
     parser.add_argument("--meshgrid_offset", type=float, default=10., help='')
     parser.add_argument("--L", type=int, default=16, help='number of sigmas to evaluate')
     parser.add_argument('--beta', type=float, default=None, help="factor for regularizing log-density")
+    parser.add_argument('--checkpoint_dir', type=str, default="/content/drive/MyDrive/MULDE/checkpoints")
+    parser.add_argument('--eval_freq', type=int, default=50, help="evaluate every N epochs")
+    parser.add_argument('--checkpoint_freq', type=int, default=50, help="save checkpoint every N epochs")
 
     args = parser.parse_args()
     train_and_evaluate(args)
